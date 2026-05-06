@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Massive live dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d12;
+    --panel: #131722;
+    --border: #1f2a3c;
+    --fg: #e6edf3;
+    --muted: #8b93a7;
+    --up: #26a69a;
+    --down: #ef5350;
+    --accent: #5b9dff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .status { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .status.live { color: var(--up); }
+  .status.error { color: var(--down); }
+  .add { display: flex; gap: 8px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+  input[type=text] { flex: 0 0 220px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); }
+  button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--accent); color: white; cursor: pointer; font-weight: 600; }
+  button.ghost { background: transparent; color: var(--fg); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; padding: 16px 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; transition: border-color .25s ease; }
+  .card.flash-up { border-color: var(--up); }
+  .card.flash-down { border-color: var(--down); }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+  .sym { font-size: 18px; font-weight: 700; letter-spacing: 0.4px; }
+  .ts { color: var(--muted); font-size: 11px; }
+  .price { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .change { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .change.up { color: var(--up); }
+  .change.down { color: var(--down); }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 12px; margin-top: 10px; font-size: 12px; }
+  .grid-2 div { display: flex; justify-content: space-between; }
+  .grid-2 span:first-child { color: var(--muted); }
+  .grid-2 span:last-child { font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 40px 20px; text-align: center; }
+  .remove { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 0; font-size: 16px; }
+  .remove:hover { color: var(--down); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Massive live dashboard</h1>
+  <span id="status" class="status">connecting…</span>
+</header>
+<div class="add">
+  <input id="ticker" type="text" placeholder="Add ticker (e.g. AAPL)" autocomplete="off" autofocus>
+  <button id="addBtn">Add</button>
+  <button id="presetBtn" class="ghost">Add AAPL MSFT NVDA TSLA SPY</button>
+</div>
+<div id="grid" class="grid"></div>
+<div id="empty" class="empty">No tickers yet — add one above to start streaming.</div>
+
+<script>
+const grid = document.getElementById('grid');
+const emptyEl = document.getElementById('empty');
+const statusEl = document.getElementById('status');
+const tickerInput = document.getElementById('ticker');
+const tickers = new Map(); // sym -> state
+
+let ws = null;
+let backoff = 1000;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  statusEl.textContent = 'connecting…';
+  statusEl.className = 'status';
+
+  ws.addEventListener('open', () => {
+    statusEl.textContent = 'live';
+    statusEl.className = 'status live';
+    backoff = 1000;
+    if (tickers.size) {
+      ws.send(JSON.stringify({ action: 'subscribe', tickers: Array.from(tickers.keys()) }));
+    }
+  });
+
+  ws.addEventListener('message', (ev) => {
+    let events;
+    try { events = JSON.parse(ev.data); } catch { return; }
+    if (!Array.isArray(events)) return;
+    for (const e of events) handleEvent(e);
+  });
+
+  ws.addEventListener('close', () => {
+    statusEl.textContent = `disconnected, retrying in ${Math.round(backoff/1000)}s`;
+    statusEl.className = 'status error';
+    setTimeout(connect, backoff);
+    backoff = Math.min(backoff * 2, 30000);
+  });
+
+  ws.addEventListener('error', () => {
+    statusEl.textContent = 'error';
+    statusEl.className = 'status error';
+  });
+}
+
+function handleEvent(e) {
+  if (e.ev === 'error') {
+    statusEl.textContent = `server: ${e.message}`;
+    statusEl.className = 'status error';
+    return;
+  }
+  if (e.ev === 'status') return;
+  const sym = e.sym;
+  if (!sym || !tickers.has(sym)) return;
+  const state = tickers.get(sym);
+
+  if (e.ev === 'T') {
+    const prev = state.price;
+    state.price = e.p;
+    state.lastTs = e.t;
+    if (prev != null) state.flash = e.p > prev ? 'up' : (e.p < prev ? 'down' : null);
+    state.size = e.s;
+  } else if (e.ev === 'Q') {
+    state.bid = e.bp ?? e.p;
+    state.ask = e.ap ?? e.P;
+    state.bidSize = e.bs ?? e.s;
+    state.askSize = e.as ?? e.S;
+  } else if (e.ev === 'AM') {
+    state.dayOpen = e.op ?? state.dayOpen;
+    state.dayHigh = Math.max(e.h ?? -Infinity, state.dayHigh ?? -Infinity);
+    state.dayLow = Math.min(e.l ?? Infinity, state.dayLow ?? Infinity);
+    state.dayVol = (e.av ?? state.dayVol) || state.dayVol;
+  }
+  renderCard(sym);
+}
+
+function fmt(n, opts={}) {
+  if (n == null || Number.isNaN(n)) return '—';
+  return n.toLocaleString(undefined, { maximumFractionDigits: opts.maxDigits ?? 2, minimumFractionDigits: opts.minDigits ?? 2 });
+}
+function fmtInt(n) { return n == null ? '—' : Math.round(n).toLocaleString(); }
+function fmtTime(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms > 1e15 ? ms / 1e6 : ms > 1e12 ? ms : ms * 1000);
+  return d.toLocaleTimeString();
+}
+
+function renderCard(sym) {
+  const s = tickers.get(sym);
+  if (!s.el) {
+    s.el = document.createElement('div');
+    s.el.className = 'card';
+    grid.appendChild(s.el);
+  }
+  const change = (s.price != null && s.dayOpen) ? s.price - s.dayOpen : null;
+  const changePct = (change != null && s.dayOpen) ? (change / s.dayOpen * 100) : null;
+  const dirClass = change == null ? '' : (change >= 0 ? 'up' : 'down');
+  const arrow = change == null ? '' : (change >= 0 ? '▲' : '▼');
+  s.el.innerHTML = `
+    <div class="card-head">
+      <div class="sym">${sym}</div>
+      <button class="remove" title="Remove">×</button>
+    </div>
+    <div class="price">$${fmt(s.price, { maxDigits: 4, minDigits: 2 })}</div>
+    <div class="change ${dirClass}">${arrow} ${change == null ? '—' : fmt(change)} (${changePct == null ? '—' : fmt(changePct)}%)</div>
+    <div class="grid-2">
+      <div><span>Bid</span><span>${fmt(s.bid)} × ${fmtInt(s.bidSize)}</span></div>
+      <div><span>Ask</span><span>${fmt(s.ask)} × ${fmtInt(s.askSize)}</span></div>
+      <div><span>Day O</span><span>${fmt(s.dayOpen)}</span></div>
+      <div><span>Day H</span><span>${fmt(s.dayHigh)}</span></div>
+      <div><span>Day L</span><span>${fmt(s.dayLow)}</span></div>
+      <div><span>Day Vol</span><span>${fmtInt(s.dayVol)}</span></div>
+      <div style="grid-column:1/-1"><span>Last trade</span><span class="ts">${fmtTime(s.lastTs)}</span></div>
+    </div>`;
+  s.el.querySelector('.remove').onclick = () => removeTicker(sym);
+  if (s.flash) {
+    s.el.classList.add(s.flash === 'up' ? 'flash-up' : 'flash-down');
+    setTimeout(() => s.el && s.el.classList.remove('flash-up', 'flash-down'), 600);
+    s.flash = null;
+  }
+  emptyEl.style.display = tickers.size ? 'none' : '';
+}
+
+function addTicker(sym) {
+  sym = sym.trim().toUpperCase();
+  if (!sym || tickers.has(sym)) return;
+  tickers.set(sym, {});
+  renderCard(sym);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'subscribe', tickers: [sym] }));
+  }
+}
+
+function removeTicker(sym) {
+  const s = tickers.get(sym);
+  if (s?.el) s.el.remove();
+  tickers.delete(sym);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'unsubscribe', tickers: [sym] }));
+  }
+  emptyEl.style.display = tickers.size ? 'none' : '';
+}
+
+document.getElementById('addBtn').onclick = () => { addTicker(tickerInput.value); tickerInput.value = ''; };
+tickerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { addTicker(tickerInput.value); tickerInput.value = ''; }});
+document.getElementById('presetBtn').onclick = () => { ['AAPL','MSFT','NVDA','TSLA','SPY'].forEach(addTicker); };
+
+connect();
+</script>
+</body>
+</html>

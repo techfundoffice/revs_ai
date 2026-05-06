@@ -27,6 +27,7 @@ import Indicators from "./pages/Indicators";
 import PatternDetail from "./pages/PatternDetail";
 import Patterns from "./pages/Patterns";
 import PortfolioPage from "./pages/Portfolio";
+import MassiveLive from "./pages/MassiveLive";
 import TradingBots from "./pages/TradingBots";
 import TradingBotDetail from "./pages/TradingBotDetail";
 import EditBot from "./pages/EditBot";
@@ -85,6 +86,9 @@ function App() {
 
                   {/* Portfolio route */}
                   <Route path="portfolio" element={<PortfolioPage />} />
+
+                  {/* Massive live streaming dashboard */}
+                  <Route path="massive-live" element={<MassiveLive />} />
 
                   {/* Trading Bots routes - Admin only */}
                   <Route

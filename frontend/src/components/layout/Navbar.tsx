@@ -12,6 +12,7 @@ import {
   Search,
   Bot,
   PlaySquare,
+  Activity,
 } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import Avatar from "../common/Avatar";
@@ -29,6 +30,7 @@ const Navbar: React.FC = () => {
   const navigation = [
     { name: "Dashboard", href: "/dashboard", icon: Home },
     { name: "Stocks", href: "/stocks", icon: TrendingUp },
+    { name: "Massive Live", href: "/massive-live", icon: Activity },
     { name: "Portfolio", href: "/portfolio", icon: User },
     // Only show Bots and Simulations for admin users
     ...(user?.role === "admin"

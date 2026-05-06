@@ -7,7 +7,6 @@ import logging
 import time
 from datetime import datetime
 
-import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
@@ -239,17 +238,21 @@ class Command(BaseCommand):
     ):
         """Sync historical data for a single stock."""
         try:
-            # Use yfinance directly for historical data
-            ticker = yf.Ticker(stock.symbol)
+            # Fetch historical bars from Massive
+            from stocks.providers.massive import massive_finance_service
 
-            # Fetch historical data
-            if start_date and end_date:
-                hist = ticker.history(start=start_date, end=end_date, interval=interval)
-            else:
-                hist = ticker.history(period=period, interval=interval)
+            bars = massive_finance_service.get_historical_bars(
+                stock.symbol,
+                interval=interval,
+                period=period,
+                start=start_date,
+                end=end_date,
+            )
 
-            if hist.empty:
-                logger.warning(f"No historical data found for symbol: {stock.symbol}")
+            if not bars:
+                logger.warning(
+                    f"No historical data found for symbol: {stock.symbol}"
+                )
                 return 0
 
             records_created = 0
@@ -260,44 +263,28 @@ class Command(BaseCommand):
 
                 # Create historical price records
                 historical_prices = []
-                for date_index, row in hist.iterrows():
-                    # Convert pandas timestamp to date
-                    if hasattr(date_index, "date"):
-                        trade_date = date_index.date()
-                    else:
-                        trade_date = date_index.to_pydatetime().date()
-
+                for bar in bars:
                     # Skip if any required price data is missing
                     if (
-                        row.isna()[["Open", "High", "Low", "Close"]].any()
-                        or row["Open"] <= 0
-                        or row["High"] <= 0
-                        or row["Low"] <= 0
-                        or row["Close"] <= 0
+                        bar["open"] <= 0
+                        or bar["high"] <= 0
+                        or bar["low"] <= 0
+                        or bar["close"] <= 0
                     ):
                         continue
-
-                    # Handle timestamp conversion properly
-                    timestamp = None
-                    if hasattr(date_index, "to_pydatetime"):
-                        dt = date_index.to_pydatetime()
-                        # If datetime is already timezone-aware, use as is, otherwise make it aware
-                        timestamp = timezone.make_aware(dt) if dt.tzinfo is None else dt
 
                     historical_prices.append(
                         StockPrice(
                             stock=stock,
-                            date=trade_date,
-                            timestamp=timestamp,
+                            date=bar["date"],
+                            timestamp=bar["timestamp"],
                             interval=interval,
-                            open_price=float(row["Open"]),
-                            high_price=float(row["High"]),
-                            low_price=float(row["Low"]),
-                            close_price=float(row["Close"]),
-                            adjusted_close=float(row.get("Adj Close", row["Close"])),
-                            volume=int(row["Volume"])
-                            if not row.isna()["Volume"]
-                            else 0,
+                            open_price=bar["open"],
+                            high_price=bar["high"],
+                            low_price=bar["low"],
+                            close_price=bar["close"],
+                            adjusted_close=bar["adj_close"],
+                            volume=bar["volume"],
                         )
                     )
 
